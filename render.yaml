@@ -1,0 +1,23 @@
+# Render Blueprint: deploys the Spring Boot API from ./backend using its Dockerfile.
+# The database is NOT created here. Use Neon or Supabase (free Postgres) and paste its details below.
+services:
+  - type: web
+    name: campusnest-api
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: DB_URL            # e.g. jdbc:postgresql://ep-xxxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+        sync: false
+      - key: DB_USERNAME
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: CORS_ORIGINS      # your Vercel URL(s), comma separated, e.g. https://campusnest.vercel.app
+        sync: false
+      - key: ADMIN_KEY         # secret for the Verification Hub; Render generates a strong one
+        generateValue: true
+      - key: SEED_DEMO_DATA    # set to false once you have real listings
+        value: "true"
