@@ -25,9 +25,11 @@ import {
     KeyRound,
     AlertTriangle,
     RefreshCw,
-    Wallet
+    Wallet,
+    ImagePlus
 } from 'lucide-react';
 import { api, ApiError } from './api';
+import { MAX_PHOTOS, optimizedImage, prepareImage, uploadConfigured, uploadImage } from './upload';
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -237,7 +239,7 @@ function PropertyCard({ property, saved, onToggleSave, onOpen, index }) {
         >
             <div className="relative h-48 bg-slate-200 overflow-hidden group">
                 <img
-                    src={property.images[0]}
+                    src={optimizedImage(property.images[0], 800)}
                     alt={property.title}
                     loading="lazy"
                     className="w-full h-full object-cover group-hover:scale-105 transition duration-500"
@@ -498,6 +500,78 @@ function HowItWorks() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Photo picker (uploads straight to Cloudinary)                       */
+/* ------------------------------------------------------------------ */
+
+function PhotoPicker({ photos, onPick, onRemove, error }) {
+    const inputRef = React.useRef(null);
+    const full = photos.length >= MAX_PHOTOS;
+
+    return (
+        <div>
+            <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                {photos.map((ph, i) => (
+                    <div key={ph.id} className="relative aspect-square rounded-lg overflow-hidden bg-slate-100 border border-slate-200">
+                        <img src={ph.preview} alt={`Photo ${i + 1}`} className="w-full h-full object-cover" />
+                        {i === 0 && ph.status === 'done' && (
+                            <span className="absolute bottom-1 left-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded">
+                                Cover
+                            </span>
+                        )}
+                        {ph.status === 'uploading' && (
+                            <div className="absolute inset-0 bg-white/70 flex items-center justify-center">
+                                <Loader2 className="w-5 h-5 animate-spin text-indigo-600" />
+                            </div>
+                        )}
+                        {ph.status === 'error' && (
+                            <div className="absolute inset-0 bg-red-50/90 flex items-center justify-center p-1 text-center">
+                                <span className="text-[10px] text-red-700 leading-tight">{ph.error}</span>
+                            </div>
+                        )}
+                        <button
+                            type="button"
+                            onClick={() => onRemove(ph.id)}
+                            aria-label={`Remove photo ${i + 1}`}
+                            className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80"
+                        >
+                            <X className="w-3 h-3" />
+                        </button>
+                    </div>
+                ))}
+
+                {!full && (
+                    <button
+                        type="button"
+                        onClick={() => inputRef.current?.click()}
+                        className="aspect-square rounded-lg border-2 border-dashed border-slate-300 text-slate-500 hover:border-indigo-400 hover:text-indigo-600 hover:bg-indigo-50/40 transition flex flex-col items-center justify-center gap-1"
+                    >
+                        <ImagePlus className="w-5 h-5" />
+                        <span className="text-[10px] font-medium">Add photo</span>
+                    </button>
+                )}
+            </div>
+
+            <input
+                ref={inputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                multiple
+                data-testid="photo-input"
+                className="hidden"
+                onChange={(e) => {
+                    onPick(Array.from(e.target.files || []));
+                    e.target.value = ''; // allows re-picking the same file
+                }}
+            />
+            <p className="text-[11px] text-slate-400 mt-1.5">
+                Up to {MAX_PHOTOS} photos. The first is the cover. JPG, PNG or WebP.
+            </p>
+            {error && <p className="text-[11px] text-red-600 mt-1">{error}</p>}
+        </div>
+    );
+}
+
+/* ------------------------------------------------------------------ */
 /* Main app                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -526,6 +600,9 @@ export default function CampusNestApp() {
     const [formData, setFormData] = useState(EMPTY_FORM);
     const [errors, setErrors] = useState({});
     const [submitting, setSubmitting] = useState(false);
+    const [photos, setPhotos] = useState([]);
+    const photosRef = React.useRef([]);
+    photosRef.current = photos;
 
     const [adminKey, setAdminKey] = useState(() => loadStored(sessionStorage, 'cn_admin_key', ''));
     const [adminUnlocked, setAdminUnlocked] = useState(false);
@@ -734,6 +811,35 @@ export default function CampusNestApp() {
         });
     };
 
+    /* ----- photos ----- */
+    const addPhotos = async (files) => {
+        const room = MAX_PHOTOS - photosRef.current.length;
+        if (room <= 0) return;
+        if (files.length > room) setToast(`Only ${MAX_PHOTOS} photos allowed. Extra files were skipped.`);
+
+        for (const file of files.slice(0, room)) {
+            const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const preview = URL.createObjectURL(file);
+            setPhotos((prev) => [...prev, { id, preview, url: '', status: 'uploading', error: '' }]);
+            try {
+                const blob = await prepareImage(file);
+                const url = await uploadImage(blob);
+                setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, url, status: 'done' } : p)));
+            } catch (err) {
+                const message = err?.message || 'Upload failed.';
+                setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, status: 'error', error: message } : p)));
+            }
+        }
+    };
+
+    const removePhoto = (id) => {
+        setPhotos((prev) => {
+            const gone = prev.find((p) => p.id === id);
+            if (gone) URL.revokeObjectURL(gone.preview);
+            return prev.filter((p) => p.id !== id);
+        });
+    };
+
     const validate = () => {
         const e = {};
         if (formData.title.trim().length < 5) e.title = 'Enter a title of at least 5 characters.';
@@ -756,6 +862,14 @@ export default function CampusNestApp() {
             setToast('Please fix the highlighted fields.');
             return;
         }
+        if (photos.some((p) => p.status === 'uploading')) {
+            setToast('Photos are still uploading. Please wait a moment.');
+            return;
+        }
+        if (photos.some((p) => p.status === 'error')) {
+            setToast('Remove the photos that failed, or try uploading them again.');
+            return;
+        }
         const isLandlord = listType === 'LANDLORD';
         const body = {
             title: formData.title.trim(),
@@ -775,7 +889,11 @@ export default function CampusNestApp() {
                 .split('\n')
                 .map((r) => r.trim())
                 .filter(Boolean),
-            images: formData.imageUrl.trim() ? [formData.imageUrl.trim()] : [],
+            images: uploadConfigured
+                ? photos.filter((p) => p.status === 'done').map((p) => p.url)
+                : formData.imageUrl.trim()
+                    ? [formData.imageUrl.trim()]
+                    : [],
             phone: formData.phone.trim(),
             landlordName: formData.landlordName.trim()
         };
@@ -785,6 +903,8 @@ export default function CampusNestApp() {
             const created = await api.createProperty(body);
             setProperties((prev) => [created, ...prev]);
             setFormData(EMPTY_FORM);
+            photos.forEach((p) => URL.revokeObjectURL(p.preview));
+            setPhotos([]);
             setErrors({});
             setFilters(DEFAULT_FILTERS);
             setActiveTab('explore');
@@ -1452,15 +1572,26 @@ export default function CampusNestApp() {
                                 />
                             </Field>
 
-                            <Field label="Photo link (optional)" error={errors.imageUrl}>
-                                <input
-                                    type="text"
-                                    placeholder="https://…"
-                                    value={formData.imageUrl}
-                                    onChange={(e) => setField({ imageUrl: e.target.value })}
-                                    className={inputCls}
-                                />
-                            </Field>
+                            {uploadConfigured ? (
+                                <Field label="Photos (optional)">
+                                    <PhotoPicker
+                                        photos={photos}
+                                        onPick={addPhotos}
+                                        onRemove={removePhoto}
+                                        error={errors.imageUrl}
+                                    />
+                                </Field>
+                            ) : (
+                                <Field label="Photo link (optional)" error={errors.imageUrl}>
+                                    <input
+                                        type="text"
+                                        placeholder="https://…"
+                                        value={formData.imageUrl}
+                                        onChange={(e) => setField({ imageUrl: e.target.value })}
+                                        className={inputCls}
+                                    />
+                                </Field>
+                            )}
 
                             <div className="grid grid-cols-2 gap-4">
                                 <Field label="Your name" error={errors.submitterName}>
@@ -1551,7 +1682,7 @@ export default function CampusNestApp() {
 
                         <div className="relative mb-4">
                             <img
-                                src={selectedProperty.images[galleryIdx] || selectedProperty.images[0]}
+                                src={optimizedImage(selectedProperty.images[galleryIdx] || selectedProperty.images[0], 1200)}
                                 alt={selectedProperty.title}
                                 className="w-full h-52 object-cover rounded-xl"
                             />
@@ -1561,7 +1692,7 @@ export default function CampusNestApp() {
                                         onClick={() =>
                                             setGalleryIdx(
                                                 (galleryIdx - 1 + selectedProperty.images.length) %
-                                                    selectedProperty.images.length
+                                                selectedProperty.images.length
                                             )
                                         }
                                         aria-label="Previous photo"
